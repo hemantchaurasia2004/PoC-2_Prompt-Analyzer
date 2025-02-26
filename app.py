@@ -2,6 +2,7 @@ import streamlit as st
 import anthropic
 from openai import OpenAI
 import json
+import re
 from typing import Dict, List, Optional, Tuple
 
 class PromptRewriter:
@@ -26,6 +27,22 @@ class PromptRewriter:
             }
         }
 
+    def validate_and_parse_json(self, json_str):
+        """Validate and parse JSON string, handling common formatting issues."""
+        # Remove any potential markdown code block indicators
+        json_str = json_str.replace("```json", "").replace("```", "").strip()
+        try:
+            return json.loads(json_str)
+        except json.JSONDecodeError:
+            # Try to find JSON content between curly braces
+            json_match = re.search(r'(\{.*\})', json_str, re.DOTALL)
+            if json_match:
+                try:
+                    return json.loads(json_match.group(1))
+                except:
+                    pass
+            raise
+
     def analyze_prompt(
         self,
         system_prompt: str,
@@ -43,6 +60,8 @@ class PromptRewriter:
         You are an expert in AI system prompt engineering and conversation analysis.
         
         Task: Analyze the provided system prompt, conversation history, and user expectations to suggest improvements.
+        
+        IMPORTANT: Your response MUST be valid, parseable JSON. Do not include any text before or after the JSON object.
         
         Current System Prompt:
         {system_prompt}
@@ -97,6 +116,8 @@ class PromptRewriter:
                 "agent_behavior": "specific behavioral changes expected"
             }}
         }}
+        
+        Remember, your entire response must be ONLY valid JSON that can be parsed by Python's json.loads() function.
         """
 
         try:
@@ -106,18 +127,28 @@ class PromptRewriter:
                     max_tokens=4000,
                     messages=[{"role": "user", "content": analysis_prompt}]
                 )
-                analysis = json.loads(response.content[0].text)
+                try:
+                    analysis = self.validate_and_parse_json(response.content[0].text)
+                except json.JSONDecodeError as json_err:
+                    st.error(f"Invalid JSON response from Anthropic model. Error: {json_err}")
+                    st.error(f"First 200 characters of response: {response.content[0].text[:200]}...")
+                    return None
             else:  # OpenAI
                 response = self.openai_client.chat.completions.create(
                     model=model,
                     messages=[
-                        {"role": "system", "content": "You are an expert in analyzing and improving AI system prompts."},
+                        {"role": "system", "content": "You are an expert in analyzing and improving AI system prompts. Your response must be valid, parseable JSON only."},
                         {"role": "user", "content": analysis_prompt}
                     ],
                     max_tokens=4000,
                     temperature=0.2
                 )
-                analysis = json.loads(response.choices[0].message.content)
+                try:
+                    analysis = self.validate_and_parse_json(response.choices[0].message.content)
+                except json.JSONDecodeError as json_err:
+                    st.error(f"Invalid JSON response from OpenAI model. Error: {json_err}")
+                    st.error(f"First 200 characters of response: {response.choices[0].message.content[:200]}...")
+                    return None
             
             return analysis
         except Exception as e:
@@ -243,6 +274,15 @@ def main():
                         st.markdown("**Reasoning:**")
                         st.write(add["reasoning"])
             
+            if analysis["improvement_suggestions"]["removals"]:
+                st.markdown("**Removals**")
+                for rem in analysis["improvement_suggestions"]["removals"]:
+                    with st.expander(f"Remove: {rem['section']}"):
+                        st.markdown("**Text to Remove:**")
+                        st.text(rem["text"])
+                        st.markdown("**Reasoning:**")
+                        st.write(rem["reasoning"])
+            
             # Rewritten Prompt
             st.subheader("Rewritten System Prompt")
             st.text_area(
@@ -260,6 +300,8 @@ def main():
             st.write(impact["user_satisfaction"])
             st.markdown("**Agent Behavior:**")
             st.write(impact["agent_behavior"])
+        else:
+            st.error("Analysis failed. Please check the error messages above and try again.")
 
 if __name__ == "__main__":
     main()
