@@ -30,12 +30,10 @@ class PromptRewriter:
 
     def validate_and_parse_json(self, json_str):
         """Validate and parse JSON string, handling common formatting issues."""
-        # Remove any potential markdown code block indicators
         json_str = json_str.replace("```json", "").replace("```", "").strip()
         try:
             return json.loads(json_str)
         except json.JSONDecodeError:
-            # Try to find JSON content between curly braces
             json_match = re.search(r'(\{.*\})', json_str, re.DOTALL)
             if json_match:
                 try:
@@ -115,6 +113,7 @@ class PromptRewriter:
                 ]
             }},
             "rewritten_prompt": "complete rewritten system prompt",
+            "rewritten_instructions": "updated instruction set if needed",
             "expected_impact": {{
                 "conversation_flow": "how the changes will improve conversation flow",
                 "user_satisfaction": "how the changes will better meet user expectations",
@@ -132,12 +131,7 @@ class PromptRewriter:
                     max_tokens=4000,
                     messages=[{"role": "user", "content": analysis_prompt}]
                 )
-                try:
-                    analysis = self.validate_and_parse_json(response.content[0].text)
-                except json.JSONDecodeError as json_err:
-                    st.error(f"Invalid JSON response from Anthropic model. Error: {json_err}")
-                    st.error(f"First 200 characters of response: {response.content[0].text[:200]}...")
-                    return None
+                analysis = self.validate_and_parse_json(response.content[0].text)
             else:  # OpenAI
                 response = self.openai_client.chat.completions.create(
                     model=model,
@@ -148,25 +142,123 @@ class PromptRewriter:
                     max_tokens=4000,
                     temperature=0.2
                 )
-                try:
-                    analysis = self.validate_and_parse_json(response.choices[0].message.content)
-                except json.JSONDecodeError as json_err:
-                    st.error(f"Invalid JSON response from OpenAI model. Error: {json_err}")
-                    st.error(f"First 200 characters of response: {response.choices[0].message.content[:200]}...")
-                    return None
+                analysis = self.validate_and_parse_json(response.choices[0].message.content)
             
             return analysis
         except Exception as e:
             st.error(f"Error in analysis: {e}")
             return None
 
-def main():
-    st.title("AI System Prompt Rewriter")
-    
-    # Initialize session state for history
+def save_to_history(analysis_data, system_prompt, instruction_set, conversation_history, latest_user_message, agent_response, user_expectation, provider, model):
+    """Save the analysis to history with proper management."""
     if "analysis_history" not in st.session_state:
         st.session_state.analysis_history = []
     
+    history_item = {
+        "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "provider": provider,
+        "model": model,
+        "system_prompt": system_prompt,
+        "instruction_set": instruction_set,
+        "conversation_history": conversation_history,
+        "latest_user_message": latest_user_message,
+        "agent_response": agent_response,
+        "user_expectation": user_expectation,
+        "analysis": analysis_data
+    }
+    
+    # Add to the beginning and maintain only last 10 items
+    st.session_state.analysis_history.insert(0, history_item)
+    if len(st.session_state.analysis_history) > 10:
+        st.session_state.analysis_history = st.session_state.analysis_history[:10]
+
+def display_analysis(analysis):
+    """Display the analysis results."""
+    if not analysis:
+        return
+        
+    st.header("Analysis Results")
+    
+    # Current Behavior Analysis
+    st.subheader("Current Behavior Analysis")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("**Strengths**")
+        for strength in analysis["current_behavior_analysis"]["strengths"]:
+            st.markdown(f"- {strength}")
+    with col2:
+        st.markdown("**Weaknesses**")
+        for weakness in analysis["current_behavior_analysis"]["weaknesses"]:
+            st.markdown(f"- {weakness}")
+    
+    st.markdown("**Gap Analysis**")
+    st.write(analysis["current_behavior_analysis"]["gap_analysis"])
+    
+    # Improvement Suggestions
+    st.subheader("Suggested Improvements")
+    
+    if analysis["improvement_suggestions"]["modifications"]:
+        st.markdown("**Modifications**")
+        for mod in analysis["improvement_suggestions"]["modifications"]:
+            with st.expander(f"Modify: {mod['section']}"):
+                st.markdown("**Current Text:**")
+                st.text(mod["current_text"])
+                st.markdown("**Suggested Text:**")
+                st.text(mod["suggested_text"])
+                st.markdown("**Reasoning:**")
+                st.write(mod["reasoning"])
+    
+    if analysis["improvement_suggestions"]["additions"]:
+        st.markdown("**Additions**")
+        for add in analysis["improvement_suggestions"]["additions"]:
+            with st.expander(f"Add: {add['section']}"):
+                st.markdown("**Suggested Text:**")
+                st.text(add["text"])
+                st.markdown("**Reasoning:**")
+                st.write(add["reasoning"])
+    
+    if analysis["improvement_suggestions"]["removals"]:
+        st.markdown("**Removals**")
+        for rem in analysis["improvement_suggestions"]["removals"]:
+            with st.expander(f"Remove: {rem['section']}"):
+                st.markdown("**Text to Remove:**")
+                st.text(rem["text"])
+                st.markdown("**Reasoning:**")
+                st.write(rem["reasoning"])
+    
+    # Rewritten Prompt and Instructions
+    st.subheader("Rewritten System Prompt")
+    st.text_area(
+        "Copy this improved prompt",
+        value=analysis["rewritten_prompt"],
+        height=300
+    )
+    
+    if "rewritten_instructions" in analysis:
+        st.subheader("Updated Instruction Set")
+        st.text_area(
+            "Copy these updated instructions",
+            value=analysis["rewritten_instructions"],
+            height=150
+        )
+    
+    # Expected Impact
+    st.subheader("Expected Impact")
+    impact = analysis["expected_impact"]
+    st.markdown("**Conversation Flow:**")
+    st.write(impact["conversation_flow"])
+    st.markdown("**User Satisfaction:**")
+    st.write(impact["user_satisfaction"])
+    st.markdown("**Agent Behavior:**")
+    st.write(impact["agent_behavior"])
+
+def main():
+    st.title("AI System Prompt Rewriter")
+    
+    # Initialize session state
+    if "analysis_history" not in st.session_state:
+        st.session_state.analysis_history = []
+        
     rewriter = PromptRewriter()
 
     # Create tabs for the sidebar
@@ -190,7 +282,7 @@ def main():
             st.info("No analysis history yet. Run an analysis to see it here.")
         else:
             for i, hist_item in enumerate(st.session_state.analysis_history):
-                with st.expander(f"{hist_item['timestamp']} - {hist_item['provider']}: {rewriter.model_providers[hist_item['provider']][hist_item['model']] if hist_item['provider'] in ['Anthropic', 'OpenAI'] else hist_item['model']}"):
+                with st.expander(f"{hist_item['timestamp']} - {hist_item['provider']}: {rewriter.model_providers[hist_item['provider']][hist_item['model']]}"):
                     st.subheader("Input")
                     st.markdown("**System Prompt:**")
                     st.text(hist_item["system_prompt"])
@@ -207,12 +299,10 @@ def main():
                     st.markdown("**User Expectation:**")
                     st.text(hist_item["user_expectation"])
                     
-                    # Add a button to load this analysis for viewing
                     if st.button("View Full Analysis", key=f"view_{i}"):
                         st.session_state.selected_analysis = hist_item["analysis"]
                         st.rerun()
                     
-                    # Add a button to load this history item into the input fields
                     if st.button("Load Into Form", key=f"load_{i}"):
                         st.session_state.load_history_item = hist_item
                         st.rerun()
@@ -229,7 +319,6 @@ def main():
         user_expectation = st.session_state.load_history_item["user_expectation"]
         conversation_history = st.session_state.load_history_item.get("conversation_history", [])
         
-        # Clear the flag after loading
         del st.session_state.load_history_item
     else:
         system_prompt = ""
@@ -243,16 +332,16 @@ def main():
         st.subheader("Current System Prompt")
         system_prompt = st.text_area(
             "Enter the current system prompt",
-            height=150,
+            height=200,
             value=system_prompt
         )
-        
+
         st.subheader("Instruction Set")
         instruction_set = st.text_area(
-            "Enter any additional instruction sets or guidelines",
-            height=150,
+            "Enter any additional instructions",
+            height=100,
             value=instruction_set,
-            placeholder="Additional guidelines, specific rules, or constraints for the AI's behavior"
+            help="These are additional instructions that guide the model's behavior"
         )
 
     with col2:
@@ -263,7 +352,6 @@ def main():
         for i in range(num_exchanges):
             st.markdown(f"**Exchange {i+1}**")
             
-            # Pre-fill from history if available
             user_val = conversation_history[i*2]["content"] if conversation_history and i*2 < len(conversation_history) else ""
             agent_val = conversation_history[i*2+1]["content"] if conversation_history and i*2+1 < len(conversation_history) else ""
             
@@ -304,31 +392,25 @@ def main():
             )
 
         if analysis:
-            # Prepare history item
-            history_item = {
-                "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "provider": provider,
-                "model": model,
-                "system_prompt": system_prompt,
-                "instruction_set": instruction_set,
-                "conversation_history": conversation_history_display,
-                "latest_user_message": latest_user_message,
-                "agent_response": agent_response,
-                "user_expectation": user_expectation,
-                "analysis": analysis
-            }
+            save_to_history(
+                analysis,
+                system_prompt,
+                instruction_set,
+                conversation_history_display,
+                latest_user_message,
+                agent_response,
+                user_expectation,
+                provider,
+                model
+            )
             
-            # Add to history at the beginning
-            st.session_state.analysis_history.insert(0, history_item)
-            
-            # Limit history to 10 items
-            st.session_state.analysis_history = st.session_state.analysis_history[:10]
-            
-            # Display analysis results
             display_analysis(analysis)
         else:
             st.error("Analysis failed. Please check the error messages above and try again.")
     
-    # Display selected analysis from history if available
     if "selected_analysis" in st.session_state:
         display_analysis(st.session_state.selected_analysis)
+        del st.session_state.selected_analysis
+
+if __name__ == "__main__":
+    main()
